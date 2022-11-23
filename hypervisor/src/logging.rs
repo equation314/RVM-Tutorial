@@ -113,13 +113,26 @@ impl Log for SimpleLogger {
             Level::Debug => ColorCode::Cyan,
             Level::Trace => ColorCode::BrightBlack,
         };
-        print(with_color!(
-            ColorCode::White,
-            "[{} {} {}\n",
-            with_color!(level_color, "{:<5}", level),
-            with_color!(ColorCode::White, "{}:{}]", target, line),
-            with_color!(args_color, "{}", record.args()),
-        ));
+        if super::init_ok() {
+            let now = crate::timer::current_time();
+            print(with_color!(
+                ColorCode::White,
+                "[{:>3}.{:06} {} {} {}\n",
+                now.as_secs(),
+                now.subsec_micros(),
+                with_color!(level_color, "{:<5}", level),
+                with_color!(ColorCode::White, "{}:{}]", target, line),
+                with_color!(args_color, "{}", record.args()),
+            ));
+        } else {
+            print(with_color!(
+                ColorCode::White,
+                "[{} {} {}\n",
+                with_color!(level_color, "{:<5}", level),
+                with_color!(ColorCode::White, "{}:{}]", target, line),
+                with_color!(args_color, "{}", record.args()),
+            ));
+        }
     }
 
     fn flush(&self) {}

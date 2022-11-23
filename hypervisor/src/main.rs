@@ -11,9 +11,14 @@ mod logging;
 
 mod arch;
 mod config;
+mod timer;
 
 #[cfg(not(test))]
 mod lang_items;
+
+use core::sync::atomic::{AtomicBool, Ordering};
+
+static INIT_OK: AtomicBool = AtomicBool::new(false);
 
 const LOGO: &str = r"
 
@@ -40,6 +45,10 @@ fn clear_bss() {
     }
 }
 
+pub fn init_ok() -> bool {
+    INIT_OK.load(Ordering::SeqCst)
+}
+
 fn main() -> ! {
     clear_bss();
     arch::init_early();
@@ -58,5 +67,12 @@ fn main() -> ! {
     logging::init();
     info!("Logging is enabled.");
 
-    unreachable!();
+    arch::init();
+    INIT_OK.store(true, Ordering::SeqCst);
+    println!("Initialization completed.\n");
+
+    arch::instructions::enable_irqs();
+    loop {
+        arch::instructions::wait_for_ints();
+    }
 }
