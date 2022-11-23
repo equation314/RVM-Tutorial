@@ -1,3 +1,5 @@
 target
 .vscode
 .DS_Store
+rvm/Cargo.lock
+!hypervisor/Cargo.lock

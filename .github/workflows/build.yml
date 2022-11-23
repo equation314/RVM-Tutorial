@@ -1,0 +1,45 @@
+name: Build CI
+
+on: [push, pull_request]
+
+jobs:
+  clippy:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64]
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: nightly-2022-11-03
+        override: true
+        components: rust-src, clippy, rustfmt
+    - name: Clippy
+      run: make -C hypervisor clippy ARCH=${{ matrix.arch }}
+    - name: Check code format
+      run: cd hypervisor && cargo fmt -- --check
+
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        arch: [x86_64]
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: nightly-2022-11-03
+        components: rust-src, llvm-tools-preview
+    - uses: actions-rs/install@v0.1
+      with:
+        crate: cargo-binutils
+        version: latest
+        use-tool-cache: true
+    - name: Build hypervisor
+      run: make -C hypervisor ARCH=${{ matrix.arch }}
