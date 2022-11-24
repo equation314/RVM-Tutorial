@@ -11,6 +11,7 @@ mod logging;
 
 mod arch;
 mod config;
+mod mm;
 mod timer;
 
 #[cfg(not(test))]
@@ -64,10 +65,12 @@ fn main() -> ! {
         option_env!("LOG").unwrap_or(""),
     );
 
+    mm::init_heap_early();
     logging::init();
     info!("Logging is enabled.");
 
     arch::init();
+    mm::init();
     INIT_OK.store(true, Ordering::SeqCst);
     println!("Initialization completed.\n");
 
