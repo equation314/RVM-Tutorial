@@ -99,6 +99,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97477e48b4cf8603ad5f7aaf897467cf42ab4218a38ef76fb14c2d6773a6d6a8"
 
 [[package]]
+name = "rvm"
+version = "0.1.0"
+dependencies = [
+ "bit_field",
+ "bitflags",
+ "cfg-if",
+ "log",
+ "raw-cpuid",
+ "x86",
+ "x86_64",
+]
+
+[[package]]
 name = "rvm-hypervisor"
 version = "0.1.0"
 dependencies = [
@@ -109,6 +122,7 @@ dependencies = [
  "lazy_static",
  "log",
  "raw-cpuid",
+ "rvm",
  "spin 0.9.4",
  "x2apic",
  "x86",

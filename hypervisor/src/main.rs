@@ -11,6 +11,7 @@ mod logging;
 
 mod arch;
 mod config;
+mod hv;
 mod mm;
 mod timer;
 
@@ -73,6 +74,9 @@ fn main() -> ! {
     mm::init();
     INIT_OK.store(true, Ordering::SeqCst);
     println!("Initialization completed.\n");
+
+    hv::run();
+    println!("Run OK!");
 
     arch::instructions::enable_irqs();
     loop {

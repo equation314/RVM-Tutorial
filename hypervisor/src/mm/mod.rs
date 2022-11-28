@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod heap;
 
 pub mod address;
