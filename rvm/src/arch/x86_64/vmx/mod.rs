@@ -1,4 +1,6 @@
 mod structs;
+mod vcpu;
+mod vmcs;
 
 use raw_cpuid::CpuId;
 use x86::{bits64::vmx, vmx::VmFail};
@@ -9,6 +11,7 @@ use crate::arch::msr::Msr;
 use crate::error::{RvmError, RvmResult};
 use crate::hal::RvmHal;
 
+pub use self::vcpu::VmxVcpu as RvmVcpu;
 pub use self::VmxPerCpuState as ArchPerCpuState;
 
 pub fn has_hardware_support() -> bool {

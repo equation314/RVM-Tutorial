@@ -9,6 +9,9 @@ pub fn run() {
     println!("Hardware support: {:?}", rvm::has_hardware_support());
 
     let mut percpu = RvmPerCpu::<RvmHalImpl>::new(0);
-    let res = percpu.hardware_enable();
-    println!("Hardware enable: {:?}", res);
+    percpu.hardware_enable().unwrap();
+
+    let mut vcpu = percpu.create_vcpu().unwrap();
+    info!("{:#x?}", vcpu);
+    vcpu.run();
 }

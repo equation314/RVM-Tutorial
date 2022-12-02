@@ -11,7 +11,7 @@ mod arch;
 mod hal;
 mod mm;
 
-use arch::ArchPerCpuState;
+use arch::{ArchPerCpuState, RvmVcpu};
 
 pub use error::{RvmError, RvmResult};
 pub use hal::RvmHal;
@@ -50,6 +50,15 @@ impl<H: RvmHal> RvmPerCpu<H> {
     /// Disable hardware virtualization on the current CPU.
     pub fn hardware_disable(&mut self) -> RvmResult {
         self.arch.hardware_disable()
+    }
+
+    /// Create a [`RvmVcpu`].
+    pub fn create_vcpu(&self) -> RvmResult<RvmVcpu<H>> {
+        if !self.is_enabled() {
+            rvm_err!(BadState, "virtualization is not enabled")
+        } else {
+            RvmVcpu::new(&self.arch)
+        }
     }
 }
 
