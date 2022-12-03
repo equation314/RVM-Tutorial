@@ -3,8 +3,10 @@
 #![allow(non_camel_case_types)]
 #![allow(clippy::upper_case_acronyms)]
 
+use bit_field::BitField;
 use x86::bits64::vmx;
 
+use super::definitions::{VmxExitReason, VmxInstructionError};
 use crate::{arch::msr::Msr, RvmResult};
 
 macro_rules! vmcs_read {
@@ -474,6 +476,20 @@ pub enum VmcsReadOnlyNW {
 }
 vmcs_read!(VmcsReadOnlyNW, usize);
 
+/// VM-Exit Informations. (SDM Vol. 3C, Section 24.9.1)
+#[derive(Debug)]
+pub struct VmxExitInfo {
+    /// VM-entry failure. (0 = true VM exit; 1 = VM-entry failure)
+    pub entry_failure: bool,
+    /// Basic exit reason.
+    pub exit_reason: VmxExitReason,
+    /// For VM exits resulting from instruction execution, this field receives
+    /// the length in bytes of the instruction whose execution led to the VM exit.
+    pub exit_instruction_length: u32,
+    /// Guest `RIP` where the VM exit occurs.
+    pub guest_rip: usize,
+}
+
 pub mod controls {
     pub use x86::vmx::vmcs::control::{EntryControls, ExitControls};
     pub use x86::vmx::vmcs::control::{PinbasedControls, PrimaryControls, SecondaryControls};
@@ -521,4 +537,21 @@ pub fn set_control(
     let fixed1 = allowed0; // these bits are fixed to 1
     control.write(fixed1 | default | set)?;
     Ok(())
+}
+
+pub fn instruction_error() -> VmxInstructionError {
+    VmcsReadOnly32::VM_INSTRUCTION_ERROR.read().unwrap().into()
+}
+
+pub fn exit_info() -> RvmResult<VmxExitInfo> {
+    let full_reason = VmcsReadOnly32::EXIT_REASON.read()?;
+    Ok(VmxExitInfo {
+        exit_reason: full_reason
+            .get_bits(0..16)
+            .try_into()
+            .expect("Unknown VM-exit reason"),
+        entry_failure: full_reason.get_bit(31),
+        exit_instruction_length: VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN.read()?,
+        guest_rip: VmcsGuestNW::RIP.read()?,
+    })
 }

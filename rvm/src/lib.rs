@@ -1,18 +1,21 @@
 #![no_std]
+#![feature(asm_const)]
 #![feature(concat_idents)]
+#![feature(naked_functions)]
 
 #[macro_use]
 extern crate log;
 
 #[macro_use]
 mod error;
-
-mod arch;
 mod hal;
 mod mm;
 
-use arch::{ArchPerCpuState, RvmVcpu};
+pub mod arch;
 
+use arch::ArchPerCpuState;
+
+pub use arch::RvmVcpu;
 pub use error::{RvmError, RvmResult};
 pub use hal::RvmHal;
 pub use mm::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, HostVirtAddr};
@@ -52,12 +55,12 @@ impl<H: RvmHal> RvmPerCpu<H> {
         self.arch.hardware_disable()
     }
 
-    /// Create a [`RvmVcpu`].
-    pub fn create_vcpu(&self) -> RvmResult<RvmVcpu<H>> {
+    /// Create a [`RvmVcpu`], set the entry point to `entry`.
+    pub fn create_vcpu(&self, entry: GuestPhysAddr) -> RvmResult<RvmVcpu<H>> {
         if !self.is_enabled() {
             rvm_err!(BadState, "virtualization is not enabled")
         } else {
-            RvmVcpu::new(&self.arch)
+            RvmVcpu::new(&self.arch, entry)
         }
     }
 }

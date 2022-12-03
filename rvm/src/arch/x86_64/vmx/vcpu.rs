@@ -1,4 +1,5 @@
 use core::fmt::{Debug, Formatter, Result};
+use core::{arch::asm, mem::size_of};
 
 use bit_field::BitField;
 use x86::bits64::vmx;
@@ -12,40 +13,68 @@ use super::vmcs::{
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
 use super::VmxPerCpuState;
-use crate::arch::{msr::Msr, regs::GeneralRegisters};
-use crate::{RvmHal, RvmResult};
+use crate::arch::{msr::Msr, GeneralRegisters};
+use crate::{GuestPhysAddr, RvmHal, RvmResult};
 
 /// A virtual CPU within a guest.
 #[repr(C)]
 pub struct VmxVcpu<H: RvmHal> {
     guest_regs: GeneralRegisters,
+    host_stack_top: u64,
     vmcs: VmxRegion<H>,
 }
 
 impl<H: RvmHal> VmxVcpu<H> {
-    pub(crate) fn new(percpu: &VmxPerCpuState<H>) -> RvmResult<Self> {
+    pub(crate) fn new(percpu: &VmxPerCpuState<H>, entry: GuestPhysAddr) -> RvmResult<Self> {
         let mut vcpu = Self {
             guest_regs: GeneralRegisters::default(),
+            host_stack_top: 0,
             vmcs: VmxRegion::new(percpu.vmcs_revision_id, false)?,
         };
-        vcpu.setup_vmcs()?;
+        vcpu.setup_vmcs(entry)?;
         info!("[RVM] created VmxVcpu(vmcs: {:#x})", vcpu.vmcs.phys_addr());
         Ok(vcpu)
     }
 
-    pub fn run(&mut self) {}
+    /// Run the guest, never return.
+    pub fn run(&mut self) -> ! {
+        VmcsHostNW::RSP
+            .write(&self.host_stack_top as *const _ as usize)
+            .unwrap();
+        unsafe { self.vmx_launch() }
+    }
+
+    /// Basic information about VM exits.
+    pub fn exit_info(&self) -> RvmResult<vmcs::VmxExitInfo> {
+        vmcs::exit_info()
+    }
+
+    /// Guest general-purpose registers.
+    pub fn regs(&self) -> &GeneralRegisters {
+        &self.guest_regs
+    }
+
+    /// Mutable reference of guest general-purpose registers.
+    pub fn regs_mut(&mut self) -> &mut GeneralRegisters {
+        &mut self.guest_regs
+    }
+
+    /// Advance guest `RIP` by `instr_len` bytes.
+    pub fn advance_rip(&mut self, instr_len: u8) -> RvmResult {
+        Ok(VmcsGuestNW::RIP.write(VmcsGuestNW::RIP.read()? + instr_len as usize)?)
+    }
 }
 
 // Implementation of private methods
 impl<H: RvmHal> VmxVcpu<H> {
-    fn setup_vmcs(&mut self) -> RvmResult {
+    fn setup_vmcs(&mut self, entry: GuestPhysAddr) -> RvmResult {
         let paddr = self.vmcs.phys_addr() as u64;
         unsafe {
             vmx::vmclear(paddr)?;
             vmx::vmptrld(paddr)?;
         }
         self.setup_vmcs_host()?;
-        self.setup_vmcs_guest()?;
+        self.setup_vmcs_guest(entry)?;
         self.setup_vmcs_control()?;
         Ok(())
     }
@@ -78,18 +107,20 @@ impl<H: RvmHal> VmxVcpu<H> {
         VmcsHostNW::TR_BASE.write(get_tr_base(tr, &gdtp) as _)?;
         VmcsHostNW::GDTR_BASE.write(gdtp.base as _)?;
         VmcsHostNW::IDTR_BASE.write(idtp.base as _)?;
+        VmcsHostNW::RIP.write(Self::vmx_exit as usize)?;
 
         VmcsHostNW::IA32_SYSENTER_ESP.write(0)?;
         VmcsHostNW::IA32_SYSENTER_EIP.write(0)?;
         VmcsHost32::IA32_SYSENTER_CS.write(0)?;
-
-        VmcsHostNW::RSP.write(0)?; // TODO
-        VmcsHostNW::RIP.write(0)?; // TODO
         Ok(())
     }
 
-    fn setup_vmcs_guest(&mut self) -> RvmResult {
-        let cr0_guest = Cr0Flags::EXTENSION_TYPE | Cr0Flags::NUMERIC_ERROR;
+    fn setup_vmcs_guest(&mut self, entry: GuestPhysAddr) -> RvmResult {
+        // enable protected mode and paging.
+        let cr0_guest = Cr0Flags::PROTECTED_MODE_ENABLE
+            | Cr0Flags::EXTENSION_TYPE
+            | Cr0Flags::NUMERIC_ERROR
+            | Cr0Flags::PAGING;
         let cr0_host_owned =
             Cr0Flags::NUMERIC_ERROR | Cr0Flags::NOT_WRITE_THROUGH | Cr0Flags::CACHE_DISABLE;
         let cr0_read_shadow = Cr0Flags::NUMERIC_ERROR;
@@ -97,7 +128,8 @@ impl<H: RvmHal> VmxVcpu<H> {
         VmcsControlNW::CR0_GUEST_HOST_MASK.write(cr0_host_owned.bits() as _)?;
         VmcsControlNW::CR0_READ_SHADOW.write(cr0_read_shadow.bits() as _)?;
 
-        let cr4_guest = Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS;
+        // enable physical address extensions that required in IA-32e mode.
+        let cr4_guest = Cr4Flags::PHYSICAL_ADDRESS_EXTENSION | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS;
         let cr4_host_owned = Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS;
         let cr4_read_shadow = 0;
         VmcsGuestNW::CR4.write(cr4_guest.bits() as _)?;
@@ -117,7 +149,7 @@ impl<H: RvmHal> VmxVcpu<H> {
         }
 
         set_guest_segment!(ES, 0x93); // 16-bit, present, data, read/write, accessed
-        set_guest_segment!(CS, 0x9b); // 16-bit, present, code, exec/read, accessed
+        set_guest_segment!(CS, 0x209b); // 64-bit, present, code, exec/read, accessed
         set_guest_segment!(SS, 0x93);
         set_guest_segment!(DS, 0x93);
         set_guest_segment!(FS, 0x93);
@@ -130,10 +162,10 @@ impl<H: RvmHal> VmxVcpu<H> {
         VmcsGuestNW::IDTR_BASE.write(0)?;
         VmcsGuest32::IDTR_LIMIT.write(0xffff)?;
 
-        VmcsGuestNW::CR3.write(0)?;
+        VmcsGuestNW::CR3.write(Cr3::read_raw().0.start_address().as_u64() as _)?; // TODO
         VmcsGuestNW::DR7.write(0x400)?;
         VmcsGuestNW::RSP.write(0)?;
-        VmcsGuestNW::RIP.write(0)?; // TODO
+        VmcsGuestNW::RIP.write(entry)?;
         VmcsGuestNW::RFLAGS.write(0x2)?;
         VmcsGuestNW::PENDING_DBG_EXCEPTIONS.write(0)?;
         VmcsGuestNW::IA32_SYSENTER_ESP.write(0)?;
@@ -147,7 +179,7 @@ impl<H: RvmHal> VmxVcpu<H> {
         VmcsGuest64::LINK_PTR.write(u64::MAX)?; // SDM Vol. 3C, Section 24.4.2
         VmcsGuest64::IA32_DEBUGCTL.write(0)?;
         VmcsGuest64::IA32_PAT.write(Msr::IA32_PAT.read())?;
-        VmcsGuest64::IA32_EFER.write(0)?;
+        VmcsGuest64::IA32_EFER.write(Msr::IA32_EFER.read())?; // required in IA-32e mode
         Ok(())
     }
 
@@ -198,13 +230,14 @@ impl<H: RvmHal> VmxVcpu<H> {
             0,
         )?;
 
-        // Load guest IA32_PAT/IA32_EFER on VM entry.
+        // Switch to 64-bit guest, load guest IA32_PAT/IA32_EFER on VM entry.
         use EntryControls as EntryCtrl;
         vmcs::set_control(
             VmcsControl32::VMENTRY_CONTROLS,
             Msr::IA32_VMX_TRUE_ENTRY_CTLS,
             Msr::IA32_VMX_ENTRY_CTLS.read() as u32,
-            (EntryCtrl::LOAD_IA32_PAT | EntryCtrl::LOAD_IA32_EFER).bits(),
+            (EntryCtrl::IA32E_MODE_GUEST | EntryCtrl::LOAD_IA32_PAT | EntryCtrl::LOAD_IA32_EFER)
+                .bits(),
             0,
         )?;
 
@@ -219,6 +252,47 @@ impl<H: RvmHal> VmxVcpu<H> {
         VmcsControl64::IO_BITMAP_B_ADDR.write(0)?;
         VmcsControl64::MSR_BITMAPS_ADDR.write(0)?; // TODO
         Ok(())
+    }
+
+    #[naked]
+    unsafe extern "C" fn vmx_launch(&mut self) -> ! {
+        asm!(
+            "mov    [rdi + {host_stack_top}], rsp", // save current RSP to Vcpu::host_stack_top
+            "mov    rsp, rdi",                      // set RSP to guest regs area
+            restore_regs_from_stack!(),
+            "vmlaunch",
+            "jmp    {failed}",
+            host_stack_top = const size_of::<GeneralRegisters>(),
+            failed = sym Self::vmx_entry_failed,
+            options(noreturn),
+        )
+    }
+
+    #[naked]
+    unsafe extern "C" fn vmx_exit(&mut self) -> ! {
+        asm!(
+            save_regs_to_stack!(),
+            "mov    r15, rsp",                      // save temporary RSP to r15
+            "mov    rdi, rsp",                      // set the first arg to &Vcpu
+            "mov    rsp, [rsp + {host_stack_top}]", // set RSP to Vcpu::host_stack_top
+            "call   {vmexit_handler}",              // call vmexit_handler
+            "mov    rsp, r15",                      // load temporary RSP from r15
+            restore_regs_from_stack!(),
+            "vmresume",
+            "jmp    {failed}",
+            host_stack_top = const size_of::<GeneralRegisters>(),
+            vmexit_handler = sym Self::vmexit_handler,
+            failed = sym Self::vmx_entry_failed,
+            options(noreturn),
+        );
+    }
+
+    fn vmx_entry_failed() -> ! {
+        panic!("{}", vmcs::instruction_error().as_str())
+    }
+
+    fn vmexit_handler(&mut self) {
+        H::vmexit_handler(self);
     }
 }
 

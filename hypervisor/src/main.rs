@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(asm_const)]
+#![feature(naked_functions)]
 #![feature(panic_info_message, alloc_error_handler)]
 
 #[macro_use]
@@ -76,10 +77,4 @@ fn main() -> ! {
     println!("Initialization completed.\n");
 
     hv::run();
-    println!("Run OK!");
-
-    arch::instructions::enable_irqs();
-    loop {
-        arch::instructions::wait_for_ints();
-    }
 }

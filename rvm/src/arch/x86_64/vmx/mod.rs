@@ -1,3 +1,4 @@
+mod definitions;
 mod structs;
 mod vcpu;
 mod vmcs;
@@ -11,7 +12,9 @@ use crate::arch::msr::Msr;
 use crate::error::{RvmError, RvmResult};
 use crate::hal::RvmHal;
 
+pub use self::definitions::VmxExitReason;
 pub use self::vcpu::VmxVcpu as RvmVcpu;
+pub use self::vmcs::VmxExitInfo;
 pub use self::VmxPerCpuState as ArchPerCpuState;
 
 pub fn has_hardware_support() -> bool {
@@ -127,6 +130,9 @@ impl<H: RvmHal> VmxPerCpuState<H> {
 
 impl From<VmFail> for RvmError {
     fn from(err: VmFail) -> Self {
-        rvm_err_type!(BadState, format_args!("VMX instruction failed: {:?}", err))
+        match err {
+            VmFail::VmFailValid => rvm_err_type!(BadState, vmcs::instruction_error().as_str()),
+            _ => rvm_err_type!(BadState, format_args!("VMX instruction failed: {:?}", err)),
+        }
     }
 }

@@ -1,5 +1,6 @@
-use rvm::{HostPhysAddr, HostVirtAddr, RvmHal};
+use rvm::{HostPhysAddr, HostVirtAddr, RvmHal, RvmVcpu};
 
+use super::vmexit;
 use crate::mm::{address, frame};
 
 pub struct RvmHalImpl;
@@ -19,5 +20,9 @@ impl RvmHal for RvmHalImpl {
 
     fn virt_to_phys(vaddr: HostVirtAddr) -> HostPhysAddr {
         address::virt_to_phys(vaddr)
+    }
+
+    fn vmexit_handler(vcpu: &mut RvmVcpu<Self>) {
+        vmexit::vmexit_handler(vcpu).unwrap()
     }
 }
