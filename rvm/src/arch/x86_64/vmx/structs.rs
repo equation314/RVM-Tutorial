@@ -2,7 +2,7 @@ use bit_field::BitField;
 use bitflags::bitflags;
 
 use crate::arch::msr::{Msr, MsrReadWrite};
-use crate::mm::PhysFrame;
+use crate::mm::{PhysFrame, PAGE_SIZE};
 use crate::{HostPhysAddr, RvmHal, RvmResult};
 
 /// VMCS/VMXON region in 4K size. (SDM Vol. 3C, Section 24.2)
@@ -107,5 +107,35 @@ impl FeatureControl {
         let reserved = old_value & !(FeatureControlFlags::all().bits());
         let new_value = reserved | flags.bits();
         unsafe { Self::write_raw(new_value) };
+    }
+}
+
+bitflags! {
+    /// Extended-Page-Table Pointer. (SDM Vol. 3C, Section 24.6.11)
+    pub struct EPTPointer: u64 {
+        /// EPT paging-structure memory type: Uncacheable (UC).
+        #[allow(clippy::identity_op)]
+        const MEM_TYPE_UC = 0 << 0;
+        /// EPT paging-structure memory type: Write-back (WB).
+        #[allow(clippy::identity_op)]
+        const MEM_TYPE_WB = 6 << 0;
+        /// EPT page-walk length 1.
+        const WALK_LENGTH_1 = 0 << 3;
+        /// EPT page-walk length 2.
+        const WALK_LENGTH_2 = 1 << 3;
+        /// EPT page-walk length 3.
+        const WALK_LENGTH_3 = 2 << 3;
+        /// EPT page-walk length 4.
+        const WALK_LENGTH_4 = 3 << 3;
+        /// Setting this control to 1 enables accessed and dirty flags for EPT.
+        const ENABLE_ACCESSED_DIRTY = 1 << 6;
+    }
+}
+
+impl EPTPointer {
+    pub fn from_table_phys(pml4_paddr: HostPhysAddr) -> Self {
+        let aligned_addr = pml4_paddr & !(PAGE_SIZE - 1);
+        let flags = unsafe { Self::from_bits_unchecked(aligned_addr as u64) };
+        flags | Self::MEM_TYPE_WB | Self::WALK_LENGTH_4 | Self::ENABLE_ACCESSED_DIRTY
     }
 }

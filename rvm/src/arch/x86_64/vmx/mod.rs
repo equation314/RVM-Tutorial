@@ -1,4 +1,6 @@
 mod definitions;
+mod ept;
+mod instructions;
 mod structs;
 mod vcpu;
 mod vmcs;
@@ -13,6 +15,7 @@ use crate::error::{RvmError, RvmResult};
 use crate::hal::RvmHal;
 
 pub use self::definitions::VmxExitReason;
+pub use self::ept::ExtendedPageTable as NestedPageTable;
 pub use self::vcpu::VmxVcpu as RvmVcpu;
 pub use self::vmcs::VmxExitInfo;
 pub use self::VmxPerCpuState as ArchPerCpuState;

@@ -19,3 +19,7 @@ pub const fn align_down(addr: usize) -> usize {
 pub const fn align_up(addr: usize) -> usize {
     (addr + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
 }
+
+pub const fn is_aligned(addr: usize) -> bool {
+    (addr & (PAGE_SIZE - 1)) == 0
+}

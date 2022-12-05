@@ -3,6 +3,7 @@
 #![feature(concat_idents)]
 #![feature(naked_functions)]
 
+extern crate alloc;
 #[macro_use]
 extern crate log;
 
@@ -15,10 +16,11 @@ pub mod arch;
 
 use arch::ArchPerCpuState;
 
-pub use arch::RvmVcpu;
+pub use arch::{NestedPageTable, RvmVcpu};
 pub use error::{RvmError, RvmResult};
 pub use hal::RvmHal;
 pub use mm::{GuestPhysAddr, GuestVirtAddr, HostPhysAddr, HostVirtAddr};
+pub use mm::{Level4PageTable, MemFlags, NestedPageFaultInfo};
 
 /// Whether the hardware has virtualization support.
 pub fn has_hardware_support() -> bool {
@@ -55,12 +57,17 @@ impl<H: RvmHal> RvmPerCpu<H> {
         self.arch.hardware_disable()
     }
 
-    /// Create a [`RvmVcpu`], set the entry point to `entry`.
-    pub fn create_vcpu(&self, entry: GuestPhysAddr) -> RvmResult<RvmVcpu<H>> {
+    /// Create a [`RvmVcpu`], set the entry point to `entry`, set the nested
+    /// page table root to `npt_root`.
+    pub fn create_vcpu(
+        &self,
+        entry: GuestPhysAddr,
+        npt_root: HostPhysAddr,
+    ) -> RvmResult<RvmVcpu<H>> {
         if !self.is_enabled() {
             rvm_err!(BadState, "virtualization is not enabled")
         } else {
-            RvmVcpu::new(&self.arch, entry)
+            RvmVcpu::new(&self.arch, entry, npt_root)
         }
     }
 }

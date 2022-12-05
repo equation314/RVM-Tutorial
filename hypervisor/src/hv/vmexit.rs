@@ -17,6 +17,14 @@ fn handle_hypercall(vcpu: &mut Vcpu) -> RvmResult {
     Ok(())
 }
 
+fn handle_ept_violation(vcpu: &Vcpu, guest_rip: usize) -> RvmResult {
+    let fault_info = vcpu.nested_page_fault_info()?;
+    panic!(
+        "VM exit: EPT violation @ {:#x}, fault_paddr={:#x}, access_flags=({:?})",
+        guest_rip, fault_info.fault_guest_paddr, fault_info.access_flags
+    );
+}
+
 pub fn vmexit_handler(vcpu: &mut Vcpu) -> RvmResult {
     let exit_info = vcpu.exit_info()?;
     debug!("VM exit: {:#x?}", exit_info);
@@ -27,6 +35,7 @@ pub fn vmexit_handler(vcpu: &mut Vcpu) -> RvmResult {
 
     let res = match exit_info.exit_reason {
         VmxExitReason::VMCALL => handle_hypercall(vcpu),
+        VmxExitReason::EPT_VIOLATION => handle_ept_violation(vcpu, exit_info.guest_rip),
         _ => panic!(
             "Unhandled VM-Exit reason {:?}:\n{:#x?}",
             exit_info.exit_reason, vcpu

@@ -7,7 +7,7 @@ use bit_field::BitField;
 use x86::bits64::vmx;
 
 use super::definitions::{VmxExitReason, VmxInstructionError};
-use crate::{arch::msr::Msr, RvmResult};
+use crate::{arch::msr::Msr, HostPhysAddr, MemFlags, NestedPageFaultInfo, RvmResult};
 
 macro_rules! vmcs_read {
     ($field_enum: ident, u64) => {
@@ -539,6 +539,14 @@ pub fn set_control(
     Ok(())
 }
 
+pub fn set_ept_pointer(pml4_paddr: HostPhysAddr) -> RvmResult {
+    use super::instructions::{invept, InvEptType};
+    let eptp = super::structs::EPTPointer::from_table_phys(pml4_paddr).bits();
+    VmcsControl64::EPTP.write(eptp)?;
+    unsafe { invept(InvEptType::SingleContext, eptp)? };
+    Ok(())
+}
+
 pub fn instruction_error() -> VmxInstructionError {
     VmcsReadOnly32::VM_INSTRUCTION_ERROR.read().unwrap().into()
 }
@@ -553,5 +561,25 @@ pub fn exit_info() -> RvmResult<VmxExitInfo> {
         entry_failure: full_reason.get_bit(31),
         exit_instruction_length: VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN.read()?,
         guest_rip: VmcsGuestNW::RIP.read()?,
+    })
+}
+
+pub fn ept_violation_info() -> RvmResult<NestedPageFaultInfo> {
+    // SDM Vol. 3C, Section 27.2.1, Table 27-7
+    let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
+    let fault_guest_paddr = VmcsReadOnly64::GUEST_PHYSICAL_ADDR.read()? as usize;
+    let mut access_flags = MemFlags::empty();
+    if qualification.get_bit(0) {
+        access_flags |= MemFlags::READ;
+    }
+    if qualification.get_bit(1) {
+        access_flags |= MemFlags::WRITE;
+    }
+    if qualification.get_bit(2) {
+        access_flags |= MemFlags::EXECUTE;
+    }
+    Ok(NestedPageFaultInfo {
+        access_flags,
+        fault_guest_paddr,
     })
 }
