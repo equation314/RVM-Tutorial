@@ -3,6 +3,9 @@ ARCH ?= x86_64
 MODE ?= release
 LOG ?= warn
 
+BIOS_IMG ?= ../guest/bios/out/rvm-bios.bin
+GUEST_IMG ?= ../guest/nimbos/kernel/target/x86_64/release/nimbos.bin
+
 export ARCH
 export MODE
 export LOG
@@ -25,7 +28,9 @@ GDB := gdb-multiarch
 qemu := qemu-system-$(ARCH)
 qemu_args := -nographic -m 128M
 
-qemu_args += -cpu host,+x2apic,+vmx -accel kvm
+qemu_args += -cpu host,+x2apic,+vmx -accel kvm \
+	-device loader,addr=0x4000000,file=$(BIOS_IMG),force-raw=on \
+	-device loader,addr=0x4001000,file=$(GUEST_IMG),force-raw=on
 
 ifeq ($(ARCH), x86_64)
   qemu_args += \

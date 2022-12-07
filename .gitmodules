@@ -1,0 +1,3 @@
+[submodule "guest/nimbos"]
+	path = guest/nimbos
+	url = https://github.com/equation314/nimbos.git

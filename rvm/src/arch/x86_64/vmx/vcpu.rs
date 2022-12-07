@@ -7,7 +7,7 @@ use x86::dtables::{self, DescriptorTablePointer};
 use x86::segmentation::SegmentSelector;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr4, Cr4Flags};
 
-use super::structs::VmxRegion;
+use super::structs::{MsrBitmap, VmxRegion};
 use super::vmcs::{
     self, VmcsControl32, VmcsControl64, VmcsControlNW, VmcsGuest16, VmcsGuest32, VmcsGuest64,
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
@@ -22,6 +22,7 @@ pub struct VmxVcpu<H: RvmHal> {
     guest_regs: GeneralRegisters,
     host_stack_top: u64,
     vmcs: VmxRegion<H>,
+    msr_bitmap: MsrBitmap<H>,
 }
 
 impl<H: RvmHal> VmxVcpu<H> {
@@ -34,6 +35,7 @@ impl<H: RvmHal> VmxVcpu<H> {
             guest_regs: GeneralRegisters::default(),
             host_stack_top: 0,
             vmcs: VmxRegion::new(percpu.vmcs_revision_id, false)?,
+            msr_bitmap: MsrBitmap::passthrough_all()?,
         };
         vcpu.setup_vmcs(entry, ept_root)?;
         info!("[RVM] created VmxVcpu(vmcs: {:#x})", vcpu.vmcs.phys_addr());
@@ -56,11 +58,6 @@ impl<H: RvmHal> VmxVcpu<H> {
     /// Information for VM exits due to nested page table faults (EPT violation).
     pub fn nested_page_fault_info(&self) -> RvmResult<NestedPageFaultInfo> {
         vmcs::ept_violation_info()
-    }
-
-    /// Set guest page table root. (`CR3`)
-    pub fn set_page_table_root(&mut self, cr3: GuestPhysAddr) {
-        VmcsGuestNW::CR3.write(cr3).unwrap()
     }
 
     /// Guest general-purpose registers.
@@ -140,11 +137,7 @@ impl<H: RvmHal> VmxVcpu<H> {
     }
 
     fn setup_vmcs_guest(&mut self, entry: GuestPhysAddr) -> RvmResult {
-        // enable protected mode and paging.
-        let cr0_guest = Cr0Flags::PROTECTED_MODE_ENABLE
-            | Cr0Flags::EXTENSION_TYPE
-            | Cr0Flags::NUMERIC_ERROR
-            | Cr0Flags::PAGING;
+        let cr0_guest = Cr0Flags::EXTENSION_TYPE | Cr0Flags::NUMERIC_ERROR;
         let cr0_host_owned =
             Cr0Flags::NUMERIC_ERROR | Cr0Flags::NOT_WRITE_THROUGH | Cr0Flags::CACHE_DISABLE;
         let cr0_read_shadow = Cr0Flags::NUMERIC_ERROR;
@@ -152,8 +145,7 @@ impl<H: RvmHal> VmxVcpu<H> {
         VmcsControlNW::CR0_GUEST_HOST_MASK.write(cr0_host_owned.bits() as _)?;
         VmcsControlNW::CR0_READ_SHADOW.write(cr0_read_shadow.bits() as _)?;
 
-        // enable physical address extensions that required in IA-32e mode.
-        let cr4_guest = Cr4Flags::PHYSICAL_ADDRESS_EXTENSION | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS;
+        let cr4_guest = Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS;
         let cr4_host_owned = Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS;
         let cr4_read_shadow = 0;
         VmcsGuestNW::CR4.write(cr4_guest.bits() as _)?;
@@ -173,7 +165,7 @@ impl<H: RvmHal> VmxVcpu<H> {
         }
 
         set_guest_segment!(ES, 0x93); // 16-bit, present, data, read/write, accessed
-        set_guest_segment!(CS, 0x209b); // 64-bit, present, code, exec/read, accessed
+        set_guest_segment!(CS, 0x9b); // 16-bit, present, code, exec/read, accessed
         set_guest_segment!(SS, 0x93);
         set_guest_segment!(DS, 0x93);
         set_guest_segment!(FS, 0x93);
@@ -203,7 +195,7 @@ impl<H: RvmHal> VmxVcpu<H> {
         VmcsGuest64::LINK_PTR.write(u64::MAX)?; // SDM Vol. 3C, Section 24.4.2
         VmcsGuest64::IA32_DEBUGCTL.write(0)?;
         VmcsGuest64::IA32_PAT.write(Msr::IA32_PAT.read())?;
-        VmcsGuest64::IA32_EFER.write(Msr::IA32_EFER.read())?; // required in IA-32e mode
+        VmcsGuest64::IA32_EFER.write(0)?;
         Ok(())
     }
 
@@ -219,23 +211,28 @@ impl<H: RvmHal> VmxVcpu<H> {
             0,
         )?;
 
-        // Activate secondary controls, disable CR3 load/store interception.
+        // Use MSR bitmaps, activate secondary controls,
+        // disable CR3 load/store interception.
         use PrimaryControls as CpuCtrl;
         vmcs::set_control(
             VmcsControl32::PRIMARY_PROCBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_TRUE_PROCBASED_CTLS,
             Msr::IA32_VMX_PROCBASED_CTLS.read() as u32,
-            CpuCtrl::SECONDARY_CONTROLS.bits(),
+            (CpuCtrl::USE_MSR_BITMAPS | CpuCtrl::SECONDARY_CONTROLS).bits(),
             (CpuCtrl::CR3_LOAD_EXITING | CpuCtrl::CR3_STORE_EXITING).bits(),
         )?;
 
-        // Enable EPT, RDTSCP, INVPCID.
+        // Enable EPT, RDTSCP, INVPCID, and unrestricted guest.
         use SecondaryControls as CpuCtrl2;
         vmcs::set_control(
             VmcsControl32::SECONDARY_PROCBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_PROCBASED_CTLS2,
             0,
-            (CpuCtrl2::ENABLE_EPT | CpuCtrl2::ENABLE_RDTSCP | CpuCtrl2::ENABLE_INVPCID).bits(),
+            (CpuCtrl2::ENABLE_EPT
+                | CpuCtrl2::ENABLE_RDTSCP
+                | CpuCtrl2::ENABLE_INVPCID
+                | CpuCtrl2::UNRESTRICTED_GUEST)
+                .bits(),
             0,
         )?;
 
@@ -254,14 +251,13 @@ impl<H: RvmHal> VmxVcpu<H> {
             0,
         )?;
 
-        // Switch to 64-bit guest, load guest IA32_PAT/IA32_EFER on VM entry.
+        // Load guest IA32_PAT/IA32_EFER on VM entry.
         use EntryControls as EntryCtrl;
         vmcs::set_control(
             VmcsControl32::VMENTRY_CONTROLS,
             Msr::IA32_VMX_TRUE_ENTRY_CTLS,
             Msr::IA32_VMX_ENTRY_CTLS.read() as u32,
-            (EntryCtrl::IA32E_MODE_GUEST | EntryCtrl::LOAD_IA32_PAT | EntryCtrl::LOAD_IA32_EFER)
-                .bits(),
+            (EntryCtrl::LOAD_IA32_PAT | EntryCtrl::LOAD_IA32_EFER).bits(),
             0,
         )?;
 
@@ -272,11 +268,11 @@ impl<H: RvmHal> VmxVcpu<H> {
         VmcsControl32::VMEXIT_MSR_LOAD_COUNT.write(0)?;
         VmcsControl32::VMENTRY_MSR_LOAD_COUNT.write(0)?;
 
-        // Pass-through exceptions, I/O instructions, and MSR read/write.
+        // Pass-through exceptions, I/O instructions, set MSR bitmaps.
         VmcsControl32::EXCEPTION_BITMAP.write(0)?;
         VmcsControl64::IO_BITMAP_A_ADDR.write(0)?;
         VmcsControl64::IO_BITMAP_B_ADDR.write(0)?;
-        VmcsControl64::MSR_BITMAPS_ADDR.write(0)?; // TODO
+        VmcsControl64::MSR_BITMAPS_ADDR.write(self.msr_bitmap.phys_addr() as _)?;
         Ok(())
     }
 

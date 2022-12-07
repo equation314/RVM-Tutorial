@@ -33,6 +33,68 @@ impl<H: RvmHal> VmxRegion<H> {
     }
 }
 
+#[derive(Debug)]
+pub struct MsrBitmap<H: RvmHal> {
+    frame: PhysFrame<H>,
+}
+
+impl<H: RvmHal> MsrBitmap<H> {
+    pub fn passthrough_all() -> RvmResult<Self> {
+        Ok(Self {
+            frame: PhysFrame::alloc_zero()?,
+        })
+    }
+
+    #[allow(unused)]
+    pub fn intercept_all() -> RvmResult<Self> {
+        let mut frame = PhysFrame::alloc()?;
+        frame.fill(u8::MAX);
+        Ok(Self { frame })
+    }
+
+    pub fn phys_addr(&self) -> HostPhysAddr {
+        self.frame.start_paddr()
+    }
+
+    fn set_intercept(&mut self, msr: u32, is_write: bool, intercept: bool) {
+        let offset = if msr <= 0x1fff {
+            if !is_write {
+                0 // Read bitmap for low MSRs (0x0000_0000..0x0000_1FFF)
+            } else {
+                2 // Write bitmap for low MSRs (0x0000_0000..0x0000_1FFF)
+            }
+        } else if (0xc000_0000..=0xc000_1fff).contains(&msr) {
+            if !is_write {
+                1 // Read bitmap for high MSRs (0xC000_0000..0xC000_1FFF)
+            } else {
+                3 // Write bitmap for high MSRs (0xC000_0000..0xC000_1FFF)
+            }
+        } else {
+            unreachable!()
+        } * 1024;
+        let bitmap =
+            unsafe { core::slice::from_raw_parts_mut(self.frame.as_mut_ptr().add(offset), 1024) };
+        let msr = msr & 0x1fff;
+        let byte = (msr / 8) as usize;
+        let bits = msr % 8;
+        if intercept {
+            bitmap[byte] |= 1 << bits;
+        } else {
+            bitmap[byte] &= !(1 << bits);
+        }
+    }
+
+    #[allow(unused)]
+    pub fn set_read_intercept(&mut self, msr: u32, intercept: bool) {
+        self.set_intercept(msr, false, intercept);
+    }
+
+    #[allow(unused)]
+    pub fn set_write_intercept(&mut self, msr: u32, intercept: bool) {
+        self.set_intercept(msr, true, intercept);
+    }
+}
+
 /// Reporting Register of Basic VMX Capabilities. (SDM Vol. 3D, Appendix A.1)
 #[derive(Debug)]
 pub struct VmxBasic {
