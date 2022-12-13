@@ -87,7 +87,6 @@ pub fn console_putchar(c: u8) {
     COM1.lock().putchar(c);
 }
 
-#[allow(dead_code)]
 pub fn console_getchar() -> Option<u8> {
     COM1.lock().getchar()
 }

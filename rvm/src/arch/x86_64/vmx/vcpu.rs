@@ -55,6 +55,11 @@ impl<H: RvmHal> VmxVcpu<H> {
         vmcs::exit_info()
     }
 
+    /// Information for VM exits due to I/O instructions.
+    pub fn io_exit_info(&self) -> RvmResult<vmcs::VmxIoExitInfo> {
+        vmcs::io_exit_info()
+    }
+
     /// Information for VM exits due to nested page table faults (EPT violation).
     pub fn nested_page_fault_info(&self) -> RvmResult<NestedPageFaultInfo> {
         vmcs::ept_violation_info()
@@ -211,14 +216,15 @@ impl<H: RvmHal> VmxVcpu<H> {
             0,
         )?;
 
-        // Use MSR bitmaps, activate secondary controls,
+        // Intercept all I/O instructions, use MSR bitmaps, activate secondary controls,
         // disable CR3 load/store interception.
         use PrimaryControls as CpuCtrl;
         vmcs::set_control(
             VmcsControl32::PRIMARY_PROCBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_TRUE_PROCBASED_CTLS,
             Msr::IA32_VMX_PROCBASED_CTLS.read() as u32,
-            (CpuCtrl::USE_MSR_BITMAPS | CpuCtrl::SECONDARY_CONTROLS).bits(),
+            (CpuCtrl::UNCOND_IO_EXITING | CpuCtrl::USE_MSR_BITMAPS | CpuCtrl::SECONDARY_CONTROLS)
+                .bits(),
             (CpuCtrl::CR3_LOAD_EXITING | CpuCtrl::CR3_STORE_EXITING).bits(),
         )?;
 
@@ -268,7 +274,7 @@ impl<H: RvmHal> VmxVcpu<H> {
         VmcsControl32::VMEXIT_MSR_LOAD_COUNT.write(0)?;
         VmcsControl32::VMENTRY_MSR_LOAD_COUNT.write(0)?;
 
-        // Pass-through exceptions, I/O instructions, set MSR bitmaps.
+        // Pass-through exceptions, don't use I/O bitmap, set MSR bitmaps.
         VmcsControl32::EXCEPTION_BITMAP.write(0)?;
         VmcsControl64::IO_BITMAP_A_ADDR.write(0)?;
         VmcsControl64::IO_BITMAP_B_ADDR.write(0)?;

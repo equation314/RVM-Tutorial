@@ -490,6 +490,21 @@ pub struct VmxExitInfo {
     pub guest_rip: usize,
 }
 
+/// Exit Qualification for I/O Instructions. (SDM Vol. 3C, Section 27.2.1, Table 27-5)
+#[derive(Debug)]
+pub struct VmxIoExitInfo {
+    /// Size of access.
+    pub access_size: u8,
+    /// Direction of the attempted access (0 = OUT, 1 = IN).
+    pub is_in: bool,
+    /// String instruction (0 = not string; 1 = string).
+    pub is_string: bool,
+    /// REP prefixed (0 = not REP; 1 = REP).
+    pub is_repeat: bool,
+    /// Port number. (as specified in DX or in an immediate operand)
+    pub port: u16,
+}
+
 pub mod controls {
     pub use x86::vmx::vmcs::control::{EntryControls, ExitControls};
     pub use x86::vmx::vmcs::control::{PinbasedControls, PrimaryControls, SecondaryControls};
@@ -561,6 +576,18 @@ pub fn exit_info() -> RvmResult<VmxExitInfo> {
         entry_failure: full_reason.get_bit(31),
         exit_instruction_length: VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN.read()?,
         guest_rip: VmcsGuestNW::RIP.read()?,
+    })
+}
+
+pub fn io_exit_info() -> RvmResult<VmxIoExitInfo> {
+    // SDM Vol. 3C, Section 27.2.1, Table 27-5
+    let qualification = VmcsReadOnlyNW::EXIT_QUALIFICATION.read()?;
+    Ok(VmxIoExitInfo {
+        access_size: qualification.get_bits(0..3) as u8 + 1,
+        is_in: qualification.get_bit(3),
+        is_string: qualification.get_bit(4),
+        is_repeat: qualification.get_bit(5),
+        port: qualification.get_bits(16..32) as u16,
     })
 }
 

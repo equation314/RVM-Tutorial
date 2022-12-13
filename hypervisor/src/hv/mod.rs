@@ -1,3 +1,4 @@
+mod device_emu;
 mod gconfig;
 mod gpm;
 mod hal;
