@@ -1,6 +1,7 @@
 use rvm::{HostPhysAddr, HostVirtAddr, RvmHal, RvmVcpu};
 
 use super::vmexit;
+use crate::arch::timer;
 use crate::mm::{address, frame};
 
 pub struct RvmHalImpl;
@@ -24,5 +25,9 @@ impl RvmHal for RvmHalImpl {
 
     fn vmexit_handler(vcpu: &mut RvmVcpu<Self>) {
         vmexit::vmexit_handler(vcpu).unwrap()
+    }
+
+    fn current_time_nanos() -> u64 {
+        timer::ticks_to_nanos(timer::current_ticks())
     }
 }

@@ -84,12 +84,10 @@ impl<H: RvmHal> MsrBitmap<H> {
         }
     }
 
-    #[allow(unused)]
     pub fn set_read_intercept(&mut self, msr: u32, intercept: bool) {
         self.set_intercept(msr, false, intercept);
     }
 
-    #[allow(unused)]
     pub fn set_write_intercept(&mut self, msr: u32, intercept: bool) {
         self.set_intercept(msr, true, intercept);
     }

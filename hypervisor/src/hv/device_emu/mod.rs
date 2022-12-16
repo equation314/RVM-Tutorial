@@ -1,7 +1,10 @@
 mod i8259_pic;
+mod lapic;
 mod uart16550;
 
 use alloc::{sync::Arc, vec, vec::Vec};
+
+pub use self::lapic::VirtLocalApic;
 
 pub trait PortIoDevice: Send + Sync {
     fn port_range(&self) -> core::ops::Range<u16>;

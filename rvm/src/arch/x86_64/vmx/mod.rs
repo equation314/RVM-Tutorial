@@ -17,7 +17,7 @@ use crate::hal::RvmHal;
 pub use self::definitions::VmxExitReason;
 pub use self::ept::ExtendedPageTable as NestedPageTable;
 pub use self::vcpu::VmxVcpu as RvmVcpu;
-pub use self::vmcs::{VmxExitInfo, VmxIoExitInfo};
+pub use self::vmcs::{VmxExitInfo, VmxInterruptInfo, VmxIoExitInfo};
 pub use self::VmxPerCpuState as ArchPerCpuState;
 
 pub fn has_hardware_support() -> bool {

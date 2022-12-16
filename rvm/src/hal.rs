@@ -12,4 +12,6 @@ pub trait RvmHal: Sized {
     fn virt_to_phys(vaddr: HostVirtAddr) -> HostPhysAddr;
     /// VM-Exit handler.
     fn vmexit_handler(vcpu: &mut crate::RvmVcpu<Self>);
+    /// Current time in nanoseconds.
+    fn current_time_nanos() -> u64;
 }

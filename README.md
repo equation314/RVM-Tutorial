@@ -2,6 +2,16 @@
 
 Let's write an x86 hypervisor in Rust from scratch!
 
+## Features
+
+* Lightweight enough, only 3K+ LoC
+* Supported guest OS: [NimbOS](https://github.com/equation314/nimbos)
+* Guest/host memory isolation with nested paging
+* Device emulation:
+    + serial port I/O
+    + APIC timer
+* Currently, only supports single core single vCPU and single guest
+
 ## Install Build Dependencies
 
 Install [cargo-binutils](https://github.com/rust-embedded/cargo-binutils) to use `rust-objcopy` and `rust-objdump` tools:
@@ -70,3 +80,7 @@ build_mode = release
 log_level = warn
 ......
 ```
+
+## Documents
+
+* [in Chinese](https://github.com/equation314/RVM-Tutorial/wiki)

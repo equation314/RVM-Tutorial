@@ -1,3 +1,4 @@
+use alloc::collections::VecDeque;
 use core::fmt::{Debug, Formatter, Result};
 use core::{arch::asm, mem::size_of};
 
@@ -13,7 +14,7 @@ use super::vmcs::{
     VmcsGuestNW, VmcsHost16, VmcsHost32, VmcsHost64, VmcsHostNW,
 };
 use super::VmxPerCpuState;
-use crate::arch::{msr::Msr, GeneralRegisters};
+use crate::arch::{msr::Msr, ApicTimer, GeneralRegisters};
 use crate::{GuestPhysAddr, HostPhysAddr, NestedPageFaultInfo, RvmHal, RvmResult};
 
 /// A virtual CPU within a guest.
@@ -23,6 +24,8 @@ pub struct VmxVcpu<H: RvmHal> {
     host_stack_top: u64,
     vmcs: VmxRegion<H>,
     msr_bitmap: MsrBitmap<H>,
+    apic_timer: ApicTimer<H>,
+    pending_events: VecDeque<(u8, Option<u32>)>,
 }
 
 impl<H: RvmHal> VmxVcpu<H> {
@@ -36,7 +39,10 @@ impl<H: RvmHal> VmxVcpu<H> {
             host_stack_top: 0,
             vmcs: VmxRegion::new(percpu.vmcs_revision_id, false)?,
             msr_bitmap: MsrBitmap::passthrough_all()?,
+            apic_timer: ApicTimer::new(),
+            pending_events: VecDeque::with_capacity(8),
         };
+        vcpu.setup_msr_bitmap()?;
         vcpu.setup_vmcs(entry, ept_root)?;
         info!("[RVM] created VmxVcpu(vmcs: {:#x})", vcpu.vmcs.phys_addr());
         Ok(vcpu)
@@ -53,6 +59,11 @@ impl<H: RvmHal> VmxVcpu<H> {
     /// Basic information about VM exits.
     pub fn exit_info(&self) -> RvmResult<vmcs::VmxExitInfo> {
         vmcs::exit_info()
+    }
+
+    /// Information for VM exits due to external interrupts.
+    pub fn interrupt_exit_info(&self) -> RvmResult<vmcs::VmxInterruptInfo> {
+        vmcs::interrupt_exit_info()
     }
 
     /// Information for VM exits due to I/O instructions.
@@ -89,10 +100,49 @@ impl<H: RvmHal> VmxVcpu<H> {
     pub fn advance_rip(&mut self, instr_len: u8) -> RvmResult {
         Ok(VmcsGuestNW::RIP.write(VmcsGuestNW::RIP.read()? + instr_len as usize)?)
     }
+
+    /// Add a virtual interrupt or exception to the pending events list,
+    /// and try to inject it before later VM entries.
+    pub fn inject_event(&mut self, vector: u8, err_code: Option<u32>) {
+        self.pending_events.push_back((vector, err_code));
+    }
+
+    /// If enable, a VM exit occurs at the beginning of any instruction if
+    /// `RFLAGS.IF` = 1 and there are no other blocking of interrupts.
+    /// (see SDM, Vol. 3C, Section 24.4.2)
+    pub fn set_interrupt_window(&mut self, enable: bool) -> RvmResult {
+        let mut ctrl = VmcsControl32::PRIMARY_PROCBASED_EXEC_CONTROLS.read()?;
+        let bits = vmcs::controls::PrimaryControls::INTERRUPT_WINDOW_EXITING.bits();
+        if enable {
+            ctrl |= bits
+        } else {
+            ctrl &= !bits
+        }
+        VmcsControl32::PRIMARY_PROCBASED_EXEC_CONTROLS.write(ctrl)?;
+        Ok(())
+    }
+
+    /// Returns the mutable reference of [`ApicTimer`].
+    pub fn apic_timer_mut(&mut self) -> &mut ApicTimer<H> {
+        &mut self.apic_timer
+    }
 }
 
 // Implementation of private methods
 impl<H: RvmHal> VmxVcpu<H> {
+    fn setup_msr_bitmap(&mut self) -> RvmResult {
+        // Intercept IA32_APIC_BASE MSR accesses
+        let msr = x86::msr::IA32_APIC_BASE;
+        self.msr_bitmap.set_read_intercept(msr, true);
+        self.msr_bitmap.set_write_intercept(msr, true);
+        // Intercept all x2APIC MSR accesses
+        for msr in 0x800..=0x83f {
+            self.msr_bitmap.set_read_intercept(msr, true);
+            self.msr_bitmap.set_write_intercept(msr, true);
+        }
+        Ok(())
+    }
+
     fn setup_vmcs(&mut self, entry: GuestPhysAddr, ept_root: HostPhysAddr) -> RvmResult {
         let paddr = self.vmcs.phys_addr() as u64;
         unsafe {
@@ -205,14 +255,14 @@ impl<H: RvmHal> VmxVcpu<H> {
     }
 
     fn setup_vmcs_control(&mut self, ept_root: HostPhysAddr) -> RvmResult {
-        // Intercept NMI, pass-through external interrupts.
+        // Intercept NMI and external interrupts.
         use super::vmcs::controls::*;
         use PinbasedControls as PinCtrl;
         vmcs::set_control(
             VmcsControl32::PINBASED_EXEC_CONTROLS,
             Msr::IA32_VMX_TRUE_PINBASED_CTLS,
             Msr::IA32_VMX_PINBASED_CTLS.read() as u32,
-            PinCtrl::NMI_EXITING.bits(),
+            (PinCtrl::NMI_EXITING | PinCtrl::EXTERNAL_INTERRUPT_EXITING).bits(),
             0,
         )?;
 
@@ -242,13 +292,14 @@ impl<H: RvmHal> VmxVcpu<H> {
             0,
         )?;
 
-        // Switch to 64-bit host, switch IA32_PAT/IA32_EFER on VM exit.
+        // Switch to 64-bit host, acknowledge interrupt info, switch IA32_PAT/IA32_EFER on VM exit.
         use ExitControls as ExitCtrl;
         vmcs::set_control(
             VmcsControl32::VMEXIT_CONTROLS,
             Msr::IA32_VMX_TRUE_EXIT_CTLS,
             Msr::IA32_VMX_EXIT_CTLS.read() as u32,
             (ExitCtrl::HOST_ADDRESS_SPACE_SIZE
+                | ExitCtrl::ACK_INTERRUPT_ON_EXIT
                 | ExitCtrl::SAVE_IA32_PAT
                 | ExitCtrl::LOAD_IA32_PAT
                 | ExitCtrl::SAVE_IA32_EFER
@@ -319,8 +370,36 @@ impl<H: RvmHal> VmxVcpu<H> {
         panic!("{}", vmcs::instruction_error().as_str())
     }
 
+    /// Whether the guest interrupts are blocked. (SDM Vol. 3C, Section 24.4.2, Table 24-3)
+    fn allow_interrupt(&self) -> bool {
+        let rflags = VmcsGuestNW::RFLAGS.read().unwrap();
+        let block_state = VmcsGuest32::INTERRUPTIBILITY_STATE.read().unwrap();
+        rflags as u64 & x86_64::registers::rflags::RFlags::INTERRUPT_FLAG.bits() != 0
+            && block_state == 0
+    }
+
+    /// Try to inject a pending event before next VM entry.
+    fn check_pending_events(&mut self) -> RvmResult {
+        if let Some(event) = self.pending_events.front() {
+            if event.0 < 32 || self.allow_interrupt() {
+                // if it's an exception, or an interrupt that is not blocked, inject it directly.
+                vmcs::inject_event(event.0, event.1)?;
+                self.pending_events.pop_front();
+            } else {
+                // interrupts are blocked, enable interrupt-window exiting.
+                self.set_interrupt_window(true)?;
+            }
+        }
+        Ok(())
+    }
+
     fn vmexit_handler(&mut self) {
         H::vmexit_handler(self);
+        // Check if there is an APIC timer interrupt
+        if self.apic_timer.check_interrupt() {
+            self.inject_event(self.apic_timer.vector(), None);
+        }
+        self.check_pending_events().unwrap();
     }
 }
 

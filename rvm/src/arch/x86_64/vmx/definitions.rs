@@ -124,3 +124,69 @@ pub enum VmxExitReason {
     LOADIWKEY = 69,
 }
 }
+
+numeric_enum_macro::numeric_enum! {
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+/// The interruption type (bits 10:8) in VM-Entry Interruption-Information Field
+/// and VM-Exit Interruption-Information Field. (SDM Vol. 3C, Section 24.8.3, 24.9.2)
+pub enum VmxInterruptionType {
+    /// External interrupt
+    External = 0,
+    /// Reserved
+    Reserved = 1,
+    /// Non-maskable interrupt (NMI)
+    NMI = 2,
+    /// Hardware exception (e.g,. #PF)
+    HardException = 3,
+    /// Software interrupt (INT n)
+    SoftIntr = 4,
+    /// Privileged software exception (INT1)
+    PrivSoftException = 5,
+    /// Software exception (INT3 or INTO)
+    SoftException = 6,
+    /// Other event
+    Other = 7,
+}
+}
+
+impl VmxInterruptionType {
+    /// Whether the exception/interrupt with `vector` has an error code.
+    pub const fn vector_has_error_code(vector: u8) -> bool {
+        use x86::irq::*;
+        matches!(
+            vector,
+            DOUBLE_FAULT_VECTOR
+                | INVALID_TSS_VECTOR
+                | SEGMENT_NOT_PRESENT_VECTOR
+                | STACK_SEGEMENT_FAULT_VECTOR
+                | GENERAL_PROTECTION_FAULT_VECTOR
+                | PAGE_FAULT_VECTOR
+                | ALIGNMENT_CHECK_VECTOR
+        )
+    }
+
+    /// Determine interruption type by the interrupt vector.
+    pub const fn from_vector(vector: u8) -> Self {
+        // SDM Vol. 3C, Section 24.8.3
+        use x86::irq::*;
+        match vector {
+            DEBUG_VECTOR => Self::PrivSoftException,
+            NONMASKABLE_INTERRUPT_VECTOR => Self::NMI,
+            BREAKPOINT_VECTOR | OVERFLOW_VECTOR => Self::SoftException,
+            // SDM Vol. 3A, Section 6.15: All other vectors from 0 to 21 are exceptions.
+            0..=VIRTUALIZATION_VECTOR => Self::HardException,
+            32..=255 => Self::External,
+            _ => Self::Other,
+        }
+    }
+
+    /// For software interrupt, software exception, or privileged software
+    /// exception,we need to set VM-Entry Instruction Length Field.
+    pub const fn is_soft(&self) -> bool {
+        matches!(
+            *self,
+            Self::SoftIntr | Self::SoftException | Self::PrivSoftException
+        )
+    }
+}

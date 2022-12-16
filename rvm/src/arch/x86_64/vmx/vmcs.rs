@@ -6,7 +6,7 @@
 use bit_field::BitField;
 use x86::bits64::vmx;
 
-use super::definitions::{VmxExitReason, VmxInstructionError};
+use super::definitions::{VmxExitReason, VmxInstructionError, VmxInterruptionType};
 use crate::{arch::msr::Msr, HostPhysAddr, MemFlags, NestedPageFaultInfo, RvmResult};
 
 macro_rules! vmcs_read {
@@ -490,6 +490,40 @@ pub struct VmxExitInfo {
     pub guest_rip: usize,
 }
 
+/// VM-Entry/VM-Exit Interruption-Information Field. (SDM Vol. 3C, Section 24.8.3, 24.9.2)
+#[derive(Debug)]
+pub struct VmxInterruptInfo {
+    /// Vector of interrupt or exception.
+    pub vector: u8,
+    /// Determines details of how the injection is performed.
+    pub int_type: VmxInterruptionType,
+    /// For hardware exceptions that would have delivered an error code on the stack.
+    pub err_code: Option<u32>,
+    /// Whether the field is valid.
+    pub valid: bool,
+}
+
+impl VmxInterruptInfo {
+    /// Convert from the interrupt vector and the error code.
+    pub fn from(vector: u8, err_code: Option<u32>) -> Self {
+        Self {
+            vector,
+            int_type: VmxInterruptionType::from_vector(vector),
+            err_code,
+            valid: true,
+        }
+    }
+
+    /// Raw bits for writing to VMCS.
+    pub fn bits(&self) -> u32 {
+        let mut bits = self.vector as u32;
+        bits |= (self.int_type as u32) << 8;
+        bits.set_bit(11, self.err_code.is_some());
+        bits.set_bit(31, self.valid);
+        bits
+    }
+}
+
 /// Exit Qualification for I/O Instructions. (SDM Vol. 3C, Section 27.2.1, Table 27-5)
 #[derive(Debug)]
 pub struct VmxIoExitInfo {
@@ -577,6 +611,40 @@ pub fn exit_info() -> RvmResult<VmxExitInfo> {
         exit_instruction_length: VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN.read()?,
         guest_rip: VmcsGuestNW::RIP.read()?,
     })
+}
+
+pub fn interrupt_exit_info() -> RvmResult<VmxInterruptInfo> {
+    // SDM Vol. 3C, Section 24.9.2
+    let info = VmcsReadOnly32::VMEXIT_INTERRUPTION_INFO.read()?;
+    Ok(VmxInterruptInfo {
+        vector: info.get_bits(0..8) as u8,
+        int_type: VmxInterruptionType::try_from(info.get_bits(8..11) as u8).unwrap(),
+        err_code: if info.get_bit(11) {
+            Some(VmcsReadOnly32::VMEXIT_INTERRUPTION_ERR_CODE.read()?)
+        } else {
+            None
+        },
+        valid: info.get_bit(31),
+    })
+}
+
+pub fn inject_event(vector: u8, err_code: Option<u32>) -> RvmResult {
+    // SDM Vol. 3C, Section 24.8.3
+    let err_code = if VmxInterruptionType::vector_has_error_code(vector) {
+        err_code.or_else(|| Some(VmcsReadOnly32::VMEXIT_INTERRUPTION_ERR_CODE.read().unwrap()))
+    } else {
+        None
+    };
+    let int_info = VmxInterruptInfo::from(vector, err_code);
+    if let Some(err_code) = int_info.err_code {
+        VmcsControl32::VMENTRY_EXCEPTION_ERR_CODE.write(err_code)?;
+    }
+    if int_info.int_type.is_soft() {
+        VmcsControl32::VMENTRY_INSTRUCTION_LEN
+            .write(VmcsReadOnly32::VMEXIT_INSTRUCTION_LEN.read()?)?;
+    }
+    VmcsControl32::VMENTRY_INTERRUPTION_INFO_FIELD.write(int_info.bits())?;
+    Ok(())
 }
 
 pub fn io_exit_info() -> RvmResult<VmxIoExitInfo> {
