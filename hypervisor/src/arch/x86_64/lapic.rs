@@ -21,8 +21,8 @@ pub fn init() {
 
     unsafe {
         // Disable 8259A interrupt controllers
-        Port::<u8>::new(0x20).write(0xff);
-        Port::<u8>::new(0xA0).write(0xff);
+        Port::<u8>::new(0x21).write(0xff);
+        Port::<u8>::new(0xA1).write(0xff);
     }
 
     let mut lapic = LocalApicBuilder::new()
