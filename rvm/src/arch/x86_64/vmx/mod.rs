@@ -65,23 +65,6 @@ impl<H: RvmHal> VmxPerCpuState<H> {
             return rvm_err!(Unsupported, "VMX disabled by BIOS");
         }
 
-        // Check control registers are in a VMX-friendly state. (SDM Vol. 3C, Appendix A.7, A.8)
-        macro_rules! cr_is_valid {
-            ($value: expr, $crx: ident) => {{
-                use Msr::*;
-                let value = $value;
-                let fixed0 = concat_idents!(IA32_VMX_, $crx, _FIXED0).read();
-                let fixed1 = concat_idents!(IA32_VMX_, $crx, _FIXED1).read();
-                (!fixed0 | value != 0) && (fixed1 | !value != 0)
-            }};
-        }
-        if !cr_is_valid!(Cr0::read().bits(), CR0) {
-            return rvm_err!(BadState, "host CR0 is not valid in VMX operation");
-        }
-        if !cr_is_valid!(Cr4::read().bits(), CR4) {
-            return rvm_err!(BadState, "host CR4 is not valid in VMX operation");
-        }
-
         // Get VMCS revision identifier in IA32_VMX_BASIC MSR.
         let vmx_basic = VmxBasic::read();
         if vmx_basic.region_size as usize != crate::mm::PAGE_SIZE {
@@ -102,9 +85,29 @@ impl<H: RvmHal> VmxPerCpuState<H> {
         self.vmcs_revision_id = vmx_basic.revision_id;
         self.vmx_region = VmxRegion::new(vmx_basic.revision_id, false)?;
 
+        // Check control registers are in a VMX-friendly state. (SDM Vol. 3C, Appendix A.7, A.8)
+        macro_rules! cr_is_valid {
+            ($value: expr, $crx: ident) => {{
+                use Msr::*;
+                let value = $value;
+                let fixed0 = concat_idents!(IA32_VMX_, $crx, _FIXED0).read();
+                let fixed1 = concat_idents!(IA32_VMX_, $crx, _FIXED1).read();
+                (!fixed0 | value == !0) && (fixed1 | !value == !0)
+            }};
+        }
+
+        let cr0 = Cr0::read();
+        if !cr_is_valid!(cr0.bits(), CR0) {
+            return rvm_err!(BadState, "host CR0 is not valid in VMX operation");
+        }
+        let cr4 = Cr4::read() | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS;
+        if !cr_is_valid!(cr4.bits(), CR4) {
+            return rvm_err!(BadState, "host CR4 is not valid in VMX operation");
+        }
+
         unsafe {
             // Enable VMX using the VMXE bit.
-            Cr4::write(Cr4::read() | Cr4Flags::VIRTUAL_MACHINE_EXTENSIONS);
+            Cr4::write(cr4);
             // Execute VMXON.
             vmx::vmxon(self.vmx_region.phys_addr() as _)?;
         }
